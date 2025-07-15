@@ -101,76 +101,6 @@ async function initializeIndex() {
   }
 }
 
-async function resetDatabase() {
-  try {
-    if (!index) {
-      throw new Error('Index not initialized');
-    }
-    
-    console.log('Clearing existing vectors...');
-    try {
-      await index.deleteAll();
-      console.log('Vector database cleared');
-    } catch (error) {
-      if (error.message.includes('404')) {
-        console.log('Index appears to be empty, skipping clear operation');
-      } else {
-        throw error;
-      }
-    }
-    
-    console.log('Loading vectors from vectors.json...');
-    const vectorsData = JSON.parse(readFileSync('./vectors.json', 'utf-8'));
-    const chunks = vectorsData.chunks;
-    
-    console.log(`Found ${chunks.length} chunks to upsert`);
-    
-    // Process chunks in batches to avoid overwhelming the API
-    const batchSize = 100;
-    let normalizedVectorCount = 0;
-    
-    for (let i = 0; i < chunks.length; i += batchSize) {
-      const batch = chunks.slice(i, i + batchSize);
-      
-      const vectors = batch.map(chunk => {
-        // Generate normalized random vector as placeholder
-        const normalizedVector = generateNormalizedRandomVector(1024);
-        
-        // Verify it's normalized
-        if (!isVectorNormalized(normalizedVector)) {
-          console.warn(`Vector for chunk ${chunk.id} is not normalized! Magnitude: ${vectorMagnitude(normalizedVector)}`);
-        } else {
-          normalizedVectorCount++;
-        }
-        
-        return {
-          id: chunk.id.toString(),
-          values: normalizedVector,
-          metadata: {
-            work: chunk.work,
-            speaker: chunk.speaker,
-            text: chunk.text,
-            textLength: chunk.textLength,
-            wordCount: chunk.wordCount,
-            vectorMagnitude: vectorMagnitude(normalizedVector).toFixed(6)
-          }
-        };
-      });
-      
-      await index.upsert(vectors);
-      console.log(`Upserted batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(chunks.length / batchSize)}`);
-    }
-    
-    console.log(`Normalized vectors: ${normalizedVectorCount}/${chunks.length}`);
-    
-    console.log('Database reset complete');
-    return { success: true, message: 'Database reset successfully', chunksLoaded: chunks.length };
-  } catch (error) {
-    console.error('Error resetting database:', error);
-    throw error;
-  }
-}
-
 console.log('Setting up routes...');
 
 app.get('/api/health', (req, res) => {
@@ -193,13 +123,17 @@ app.get('/api/metrics', async (req, res) => {
     let totalVectors = 0;
     if (stats.namespaces) {
       Object.values(stats.namespaces).forEach(namespace => {
-        totalVectors += namespace.vectorCount || 0;
+        // Check for both possible field names: vectorCount or recordCount
+        totalVectors += namespace.vectorCount || namespace.recordCount || 0;
       });
     }
     
-    // Also check if totalVectorCount is available at the top level
+    // Also check if totalVectorCount or totalRecordCount is available at the top level
     if (stats.totalVectorCount) {
       totalVectors = Math.max(totalVectors, stats.totalVectorCount);
+    }
+    if (stats.totalRecordCount) {
+      totalVectors = Math.max(totalVectors, stats.totalRecordCount);
     }
     
     res.json({
@@ -216,18 +150,6 @@ app.get('/api/metrics', async (req, res) => {
   }
 });
 console.log('Metrics route registered');
-
-app.post('/api/reset', async (req, res) => {
-  console.log('Reset endpoint called');
-  try {
-    const result = await resetDatabase();
-    res.json(result);
-  } catch (error) {
-    console.error('Error resetting database:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-console.log('Reset route registered');
 
 app.post('/api/query', async (req, res) => {
   console.log('Query endpoint called');
@@ -341,7 +263,6 @@ app.listen(port, async () => {
   console.log('Available routes:');
   console.log('- GET /api/health');
   console.log('- GET /api/metrics');
-  console.log('- POST /api/reset');
   console.log('- POST /api/query');
   console.log('- GET /api/validate-vectors');
   

@@ -20,14 +20,15 @@ This project allows users to search through Shakespeare's plays and sonnets usin
 3. Create a `.env` file with your Pinecone API key:
 
 
+## How to use
+
 `node ingest.js`
-Parses data/shakespeare-complete-works and generates chunked vectors in vectors.json
+Parses data/shakespeare-complete-works and generates chunked vectors in vectors.json, then clears the Pinecone database and reloads with chunks from vectors.json
 
 `node server.js`
 Runs the backend server on port 3001 with the following endpoints:
 - GET `/api/health` - Returns server health status
 - GET `/api/metrics` - Returns database metrics including total vectors and index stats
-- POST `/api/reset` - Resets the vector database by clearing existing vectors and reloading from vectors.json
 - POST `/api/query` - Accepts a text query and returns relevant Shakespeare passages based on semantic similarity
 
 `npm start`

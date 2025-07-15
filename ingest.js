@@ -1,5 +1,42 @@
 import { readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { Pinecone } from '@pinecone-database/pinecone';
+import 'dotenv/config';
+
+// Initialize Pinecone
+const pc = new Pinecone({
+  apiKey: process.env.PINECONE_API_KEY
+});
+
+const INDEX_NAME = process.env.PINECONE_INDEX_NAME || 'shakespeare-rag';
+
+// Vector normalization utilities
+function normalizeVector(vector) {
+  const magnitude = Math.sqrt(vector.reduce((sum, val) => sum + val * val, 0));
+  if (magnitude === 0) {
+    throw new Error('Cannot normalize zero vector');
+  }
+  return vector.map(val => val / magnitude);
+}
+
+function vectorMagnitude(vector) {
+  return Math.sqrt(vector.reduce((sum, val) => sum + val * val, 0));
+}
+
+function isVectorNormalized(vector, tolerance = 1e-6) {
+  const magnitude = vectorMagnitude(vector);
+  return Math.abs(magnitude - 1.0) < tolerance;
+}
+
+function generateNormalizedRandomVector(dimension) {
+  // Generate random vector with normal distribution
+  const vector = Array.from({ length: dimension }, () => 
+    Math.random() * 2 - 1 // Random between -1 and 1
+  );
+  
+  // Normalize it
+  return normalizeVector(vector);
+}
 
 // Read the Shakespeare text file
 const shakespeareText = readFileSync('./data/shakespeare-complete-works.txt', 'utf-8');
@@ -335,8 +372,111 @@ function cleanChunks(chunks) {
   }));
 }
 
+// Function to upsert vectors to Pinecone
+async function upsertVectorsToPinecone(chunks) {
+  try {
+    console.log('Initializing Pinecone index...');
+    
+    // Check if index exists
+    const indexList = await pc.listIndexes();
+    const indexExists = indexList.indexes?.some(idx => idx.name === INDEX_NAME);
+    
+    if (!indexExists) {
+      console.log(`Creating Pinecone index: ${INDEX_NAME}`);
+      await pc.createIndex({
+        name: INDEX_NAME,
+        dimension: 1024,
+        metric: 'cosine',
+        spec: {
+          serverless: {
+            cloud: 'aws',
+            region: 'us-east-1'
+          }
+        }
+      });
+      
+      // Wait for index to be ready
+      console.log('Waiting for index to be ready...');
+      let indexReady = false;
+      while (!indexReady) {
+        const indexDescription = await pc.describeIndex(INDEX_NAME);
+        if (indexDescription.status?.ready) {
+          indexReady = true;
+          console.log('Index is ready');
+        } else {
+          console.log('Index not ready yet, waiting...');
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+    } else {
+      console.log('Index already exists');
+    }
+    
+    console.log('Getting Pinecone index...');
+    const index = pc.index(INDEX_NAME);
+    
+    console.log('Clearing existing vectors...');
+    try {
+      await index.deleteAll();
+      console.log('Vector database cleared');
+    } catch (error) {
+      if (error.message.includes('404')) {
+        console.log('Index appears to be empty, skipping clear operation');
+      } else {
+        throw error;
+      }
+    }
+    
+    console.log(`Upserting ${chunks.length} vectors to Pinecone...`);
+    
+    // Process chunks in batches to avoid overwhelming the API
+    const batchSize = 100;
+    let normalizedVectorCount = 0;
+    
+    for (let i = 0; i < chunks.length; i += batchSize) {
+      const batch = chunks.slice(i, i + batchSize);
+      
+      const vectors = batch.map(chunk => {
+        // Generate normalized random vector as placeholder
+        const normalizedVector = generateNormalizedRandomVector(1024);
+        
+        // Verify it's normalized
+        if (!isVectorNormalized(normalizedVector)) {
+          console.warn(`Vector for chunk ${chunk.id} is not normalized! Magnitude: ${vectorMagnitude(normalizedVector)}`);
+        } else {
+          normalizedVectorCount++;
+        }
+        
+        return {
+          id: chunk.id.toString(),
+          values: normalizedVector,
+          metadata: {
+            work: chunk.work,
+            speaker: chunk.speaker,
+            text: chunk.text,
+            textLength: chunk.textLength,
+            wordCount: chunk.wordCount,
+            vectorMagnitude: vectorMagnitude(normalizedVector).toFixed(6)
+          }
+        };
+      });
+      
+      await index.upsert(vectors);
+      console.log(`Upserted batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(chunks.length / batchSize)}`);
+    }
+    
+    console.log(`Successfully upserted ${chunks.length} vectors to Pinecone`);
+    console.log(`Normalized vectors: ${normalizedVectorCount}/${chunks.length}`);
+    
+    return { success: true, vectorsUpserted: chunks.length };
+  } catch (error) {
+    console.error('Error upserting vectors to Pinecone:', error);
+    throw error;
+  }
+}
+
 // Main processing function
-function main() {
+async function main() {
   console.log('Starting Shakespeare text processing...');
   console.log('Reading file...');
   
@@ -400,6 +540,16 @@ function main() {
   console.log('Writing to vectors.json...');
   writeFileSync('./vectors.json', JSON.stringify(output, null, 2));
   
+  // Upsert vectors to Pinecone
+  console.log('\\n=== UPSERTING TO PINECONE ===');
+  try {
+    const result = await upsertVectorsToPinecone(cleanedChunks);
+    console.log(`✅ Successfully upserted ${result.vectorsUpserted} vectors to Pinecone`);
+  } catch (error) {
+    console.error('❌ Failed to upsert vectors to Pinecone:', error.message);
+    process.exit(1);
+  }
+  
   // Display results
   console.log('\\n=== PROCESSING COMPLETE ===');
   console.log(`Total chunks: ${cleanedChunks.length}`);
@@ -439,6 +589,7 @@ function main() {
   });
   
   console.log('\\nOutput saved to vectors.json');
+  console.log('✅ Vectors successfully upserted to Pinecone database');
 }
 
 // Run the script

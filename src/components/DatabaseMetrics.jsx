@@ -128,7 +128,7 @@ const DatabaseMetrics = ({ refreshTrigger }) => {
                   {namespace === '' ? 'Default' : namespace}
                 </span>
                 <span className="text-sm text-gray-600">
-                  {formatNumber(data.vectorCount || 0)} vectors
+                  {formatNumber(data.vectorCount || data.recordCount || 0)} vectors
                 </span>
               </div>
             ))}

@@ -25,6 +25,34 @@ console.log('Pinecone initialized');
 const INDEX_NAME = process.env.PINECONE_INDEX_NAME || 'shakespeare-rag';
 let index;
 
+// Vector normalization utilities
+function normalizeVector(vector) {
+  const magnitude = Math.sqrt(vector.reduce((sum, val) => sum + val * val, 0));
+  if (magnitude === 0) {
+    throw new Error('Cannot normalize zero vector');
+  }
+  return vector.map(val => val / magnitude);
+}
+
+function vectorMagnitude(vector) {
+  return Math.sqrt(vector.reduce((sum, val) => sum + val * val, 0));
+}
+
+function isVectorNormalized(vector, tolerance = 1e-6) {
+  const magnitude = vectorMagnitude(vector);
+  return Math.abs(magnitude - 1.0) < tolerance;
+}
+
+function generateNormalizedRandomVector(dimension) {
+  // Generate random vector with normal distribution
+  const vector = Array.from({ length: dimension }, () => 
+    Math.random() * 2 - 1 // Random between -1 and 1
+  );
+  
+  // Normalize it
+  return normalizeVector(vector);
+}
+
 async function initializeIndex() {
   try {
     console.log('Checking if Pinecone index exists...');
@@ -99,24 +127,41 @@ async function resetDatabase() {
     
     // Process chunks in batches to avoid overwhelming the API
     const batchSize = 100;
+    let normalizedVectorCount = 0;
+    
     for (let i = 0; i < chunks.length; i += batchSize) {
       const batch = chunks.slice(i, i + batchSize);
       
-      const vectors = batch.map(chunk => ({
-        id: chunk.id.toString(),
-        values: new Array(1024).fill(0).map(() => Math.random() - 0.5), // Placeholder embeddings
-        metadata: {
-          work: chunk.work,
-          speaker: chunk.speaker,
-          text: chunk.text,
-          textLength: chunk.textLength,
-          wordCount: chunk.wordCount
+      const vectors = batch.map(chunk => {
+        // Generate normalized random vector as placeholder
+        const normalizedVector = generateNormalizedRandomVector(1024);
+        
+        // Verify it's normalized
+        if (!isVectorNormalized(normalizedVector)) {
+          console.warn(`Vector for chunk ${chunk.id} is not normalized! Magnitude: ${vectorMagnitude(normalizedVector)}`);
+        } else {
+          normalizedVectorCount++;
         }
-      }));
+        
+        return {
+          id: chunk.id.toString(),
+          values: normalizedVector,
+          metadata: {
+            work: chunk.work,
+            speaker: chunk.speaker,
+            text: chunk.text,
+            textLength: chunk.textLength,
+            wordCount: chunk.wordCount,
+            vectorMagnitude: vectorMagnitude(normalizedVector).toFixed(6)
+          }
+        };
+      });
       
       await index.upsert(vectors);
       console.log(`Upserted batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(chunks.length / batchSize)}`);
     }
+    
+    console.log(`Normalized vectors: ${normalizedVectorCount}/${chunks.length}`);
     
     console.log('Database reset complete');
     return { success: true, message: 'Database reset successfully', chunksLoaded: chunks.length };
@@ -197,8 +242,13 @@ app.post('/api/query', async (req, res) => {
       return res.status(503).json({ error: 'Database not initialized' });
     }
     
-    // Generate a placeholder query vector (same dimension as stored vectors)
-    const queryVector = new Array(1024).fill(0).map(() => Math.random() - 0.5);
+    // Generate a normalized placeholder query vector (same dimension as stored vectors)
+    const queryVector = generateNormalizedRandomVector(1024);
+    
+    // Verify query vector is normalized
+    if (!isVectorNormalized(queryVector)) {
+      console.warn(`Query vector is not normalized! Magnitude: ${vectorMagnitude(queryVector)}`);
+    }
     
     const queryResponse = await index.query({
       vector: queryVector,
@@ -228,6 +278,55 @@ app.post('/api/query', async (req, res) => {
 });
 console.log('Query route registered');
 
+app.get('/api/validate-vectors', async (req, res) => {
+  console.log('Vector validation endpoint called');
+  try {
+    if (!index) {
+      return res.status(503).json({ error: 'Database not initialized' });
+    }
+    
+    // Query a sample of vectors to check their normalization
+    const sampleSize = parseInt(req.query.sampleSize) || 10;
+    const queryVector = generateNormalizedRandomVector(1024);
+    
+    const queryResponse = await index.query({
+      vector: queryVector,
+      topK: sampleSize,
+      includeMetadata: true,
+      includeValues: true
+    });
+    
+    const validationResults = queryResponse.matches.map(match => {
+      const magnitude = match.metadata?.vectorMagnitude ? 
+        parseFloat(match.metadata.vectorMagnitude) : 
+        (match.values ? vectorMagnitude(match.values) : null);
+      
+      return {
+        id: match.id,
+        magnitude: magnitude,
+        isNormalized: magnitude ? Math.abs(magnitude - 1.0) < 1e-6 : null,
+        work: match.metadata?.work,
+        speaker: match.metadata?.speaker
+      };
+    });
+    
+    const normalizedCount = validationResults.filter(r => r.isNormalized).length;
+    const totalCount = validationResults.length;
+    
+    res.json({
+      sampleSize: totalCount,
+      normalizedVectors: normalizedCount,
+      normalizationRate: totalCount > 0 ? (normalizedCount / totalCount * 100).toFixed(2) : 0,
+      samples: validationResults,
+      status: 'Vector validation complete'
+    });
+  } catch (error) {
+    console.error('Error validating vectors:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+console.log('Vector validation route registered');
+
 // Catch-all route to see what requests are coming in
 app.use('*', (req, res) => {
   console.log(`Unhandled request: ${req.method} ${req.originalUrl}`);
@@ -244,6 +343,7 @@ app.listen(port, async () => {
   console.log('- GET /api/metrics');
   console.log('- POST /api/reset');
   console.log('- POST /api/query');
+  console.log('- GET /api/validate-vectors');
   
   // Initialize index connection on startup
   await initializeIndex();

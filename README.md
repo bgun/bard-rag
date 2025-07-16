@@ -17,7 +17,7 @@ This project allows users to search through Shakespeare's plays and sonnets usin
 
 1. Clone the repository
 2. Install dependencies: `npm install`
-3. Create a `.env` file with your Pinecone API key:
+3. Create a `.env` file with your Pinecone and OpenAI API keys
 
 
 ## How to use

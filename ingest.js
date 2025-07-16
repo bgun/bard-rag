@@ -1,11 +1,17 @@
 import { readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { Pinecone } from '@pinecone-database/pinecone';
+import OpenAI from 'openai';
 import 'dotenv/config';
 
 // Initialize Pinecone
 const pc = new Pinecone({
   apiKey: process.env.PINECONE_API_KEY
+});
+
+// Initialize OpenAI
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
 });
 
 const INDEX_NAME = process.env.PINECONE_INDEX_NAME || 'shakespeare-rag';
@@ -36,6 +42,67 @@ function generateNormalizedRandomVector(dimension) {
   
   // Normalize it
   return normalizeVector(vector);
+}
+
+// Function to generate embeddings using OpenAI
+async function generateEmbedding(text) {
+  try {
+    const response = await openai.embeddings.create({
+      model: 'text-embedding-3-small',
+      input: text.trim(),
+      encoding_format: 'float'
+    });
+    
+    const embedding = response.data[0].embedding;
+    
+    // Verify the embedding is the expected dimension
+    if (embedding.length !== 1536) {
+      throw new Error(`Expected 1536 dimensions, got ${embedding.length}`);
+    }
+    
+    // Check if it's already normalized (OpenAI embeddings are usually normalized)
+    const isNormalized = isVectorNormalized(embedding);
+    if (!isNormalized) {
+      console.log('Normalizing embedding...');
+      return normalizeVector(embedding);
+    }
+    
+    return embedding;
+  } catch (error) {
+    console.error('Error generating embedding:', error);
+    throw error;
+  }
+}
+
+// Function to generate embeddings in batches to avoid rate limits
+async function generateEmbeddingsBatch(texts, batchSize = 100) {
+  const embeddings = [];
+  
+  for (let i = 0; i < texts.length; i += batchSize) {
+    const batch = texts.slice(i, i + batchSize);
+    console.log(`Generating embeddings for batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(texts.length / batchSize)}`);
+    
+    try {
+      const response = await openai.embeddings.create({
+        model: 'text-embedding-3-small',
+        input: batch.map(text => text.trim()),
+        encoding_format: 'float'
+      });
+      
+      const batchEmbeddings = response.data.map(item => item.embedding);
+      embeddings.push(...batchEmbeddings);
+      
+      // Small delay to avoid rate limits
+      if (i + batchSize < texts.length) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    } catch (error) {
+      console.error(`Error in batch ${Math.floor(i / batchSize) + 1}:`, error);
+      throw error;
+    }
+  }
+  
+  return embeddings;
 }
 
 // Read the Shakespeare text file
@@ -385,7 +452,7 @@ async function upsertVectorsToPinecone(chunks) {
       console.log(`Creating Pinecone index: ${INDEX_NAME}`);
       await pc.createIndex({
         name: INDEX_NAME,
-        dimension: 1024,
+        dimension: 1536,
         metric: 'cosine',
         spec: {
           serverless: {
@@ -427,6 +494,13 @@ async function upsertVectorsToPinecone(chunks) {
       }
     }
     
+    console.log(`Generating embeddings for ${chunks.length} text chunks...`);
+    
+    // Generate embeddings for all chunks
+    const texts = chunks.map(chunk => chunk.text);
+    const embeddings = await generateEmbeddingsBatch(texts, 100);
+    
+    console.log(`Generated ${embeddings.length} embeddings`);
     console.log(`Upserting ${chunks.length} vectors to Pinecone...`);
     
     // Process chunks in batches to avoid overwhelming the API
@@ -436,27 +510,27 @@ async function upsertVectorsToPinecone(chunks) {
     for (let i = 0; i < chunks.length; i += batchSize) {
       const batch = chunks.slice(i, i + batchSize);
       
-      const vectors = batch.map(chunk => {
-        // Generate normalized random vector as placeholder
-        const normalizedVector = generateNormalizedRandomVector(1024);
+      const vectors = batch.map((chunk, batchIndex) => {
+        const globalIndex = i + batchIndex;
+        const embedding = embeddings[globalIndex];
         
         // Verify it's normalized
-        if (!isVectorNormalized(normalizedVector)) {
-          console.warn(`Vector for chunk ${chunk.id} is not normalized! Magnitude: ${vectorMagnitude(normalizedVector)}`);
+        if (!isVectorNormalized(embedding)) {
+          console.warn(`Vector for chunk ${chunk.id} is not normalized! Magnitude: ${vectorMagnitude(embedding)}`);
         } else {
           normalizedVectorCount++;
         }
         
         return {
           id: chunk.id.toString(),
-          values: normalizedVector,
+          values: embedding,
           metadata: {
             work: chunk.work,
             speaker: chunk.speaker,
             text: chunk.text,
             textLength: chunk.textLength,
             wordCount: chunk.wordCount,
-            vectorMagnitude: vectorMagnitude(normalizedVector).toFixed(6)
+            vectorMagnitude: vectorMagnitude(embedding).toFixed(6)
           }
         };
       });

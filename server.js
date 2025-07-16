@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { Pinecone } from '@pinecone-database/pinecone';
 import { readFileSync } from 'fs';
+import OpenAI from 'openai';
 import 'dotenv/config';
 
 const app = express();
@@ -21,6 +22,12 @@ const pc = new Pinecone({
   apiKey: process.env.PINECONE_API_KEY
 });
 console.log('Pinecone initialized');
+
+console.log('Initializing OpenAI...');
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
+console.log('OpenAI initialized');
 
 const INDEX_NAME = process.env.PINECONE_INDEX_NAME || 'shakespeare-rag';
 let index;
@@ -51,6 +58,36 @@ function generateNormalizedRandomVector(dimension) {
   
   // Normalize it
   return normalizeVector(vector);
+}
+
+// Function to generate embeddings using OpenAI
+async function generateEmbedding(text) {
+  try {
+    const response = await openai.embeddings.create({
+      model: 'text-embedding-3-small',
+      input: text.trim(),
+      encoding_format: 'float'
+    });
+    
+    const embedding = response.data[0].embedding;
+    
+    // Verify the embedding is the expected dimension
+    if (embedding.length !== 1536) {
+      throw new Error(`Expected 1536 dimensions, got ${embedding.length}`);
+    }
+    
+    // Check if it's already normalized (OpenAI embeddings are usually normalized)
+    const isNormalized = isVectorNormalized(embedding);
+    if (!isNormalized) {
+      console.log('Normalizing embedding...');
+      return normalizeVector(embedding);
+    }
+    
+    return embedding;
+  } catch (error) {
+    console.error('Error generating embedding:', error);
+    throw error;
+  }
 }
 
 async function initializeIndex() {
@@ -138,7 +175,7 @@ app.get('/api/metrics', async (req, res) => {
     
     res.json({
       totalVectors: totalVectors,
-      dimension: stats.dimension || 1024,
+      dimension: stats.dimension || 1536,
       indexFullness: stats.indexFullness || 0,
       namespaces: stats.namespaces || {},
       rawStats: stats,
@@ -164,8 +201,8 @@ app.post('/api/query', async (req, res) => {
       return res.status(503).json({ error: 'Database not initialized' });
     }
     
-    // Generate a normalized placeholder query vector (same dimension as stored vectors)
-    const queryVector = generateNormalizedRandomVector(1024);
+    // Generate embedding for the query using OpenAI
+    const queryVector = await generateEmbedding(query);
     
     // Verify query vector is normalized
     if (!isVectorNormalized(queryVector)) {
@@ -209,7 +246,7 @@ app.get('/api/validate-vectors', async (req, res) => {
     
     // Query a sample of vectors to check their normalization
     const sampleSize = parseInt(req.query.sampleSize) || 10;
-    const queryVector = generateNormalizedRandomVector(1024);
+    const queryVector = generateNormalizedRandomVector(1536);
     
     const queryResponse = await index.query({
       vector: queryVector,

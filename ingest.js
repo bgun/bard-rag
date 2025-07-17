@@ -48,7 +48,7 @@ function generateNormalizedRandomVector(dimension) {
 async function generateEmbedding(text) {
   try {
     const response = await openai.embeddings.create({
-      model: 'text-embedding-3-small',
+      model: 'text-embedding-ada-002',
       input: text.trim(),
       encoding_format: 'float'
     });
@@ -84,7 +84,7 @@ async function generateEmbeddingsBatch(texts, batchSize = 100) {
     
     try {
       const response = await openai.embeddings.create({
-        model: 'text-embedding-3-small',
+        model: 'text-embedding-ada-002',
         input: batch.map(text => text.trim()),
         encoding_format: 'float'
       });

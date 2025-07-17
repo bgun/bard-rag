@@ -1,11 +1,10 @@
 import React, { useState } from 'react';
 
-const QueryForm = ({ onResetSuccess }) => {
+const QueryForm = () => {
   const [query, setQuery] = useState('');
   const [topK, setTopK] = useState(5);
   const [results, setResults] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [isResetting, setIsResetting] = useState(false);
   const [error, setError] = useState('');
 
   const handleSubmit = async (e) => {
@@ -37,36 +36,6 @@ const QueryForm = ({ onResetSuccess }) => {
     }
   };
 
-  const handleReset = async () => {
-    setIsResetting(true);
-    setError('');
-
-    try {
-      const response = await fetch('/api/reset', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      const result = await response.json();
-
-      if (response.ok) {
-        setResults([]);
-        setQuery('');
-        if (onResetSuccess) {
-          onResetSuccess();
-        }
-      } else {
-        setError(result.error || 'Failed to reset database');
-      }
-    } catch (error) {
-      setError(`Error: ${error.message}`);
-    } finally {
-      setIsResetting(false);
-    }
-  };
-
   const formatScore = (score) => {
     return (score * 100).toFixed(1);
   };
@@ -91,13 +60,6 @@ const QueryForm = ({ onResetSuccess }) => {
     <div className="bg-white p-6 rounded-lg shadow-md">
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-2xl font-bold text-gray-800">Search Database</h2>
-        <button
-          onClick={handleReset}
-          disabled={isResetting}
-          className="bg-red-500 hover:bg-red-600 disabled:bg-red-300 text-white font-medium py-2 px-4 rounded-md transition-colors duration-200 text-sm"
-        >
-          {isResetting ? 'Resetting...' : 'Reset Database'}
-        </button>
       </div>
       
       <form onSubmit={handleSubmit} className="space-y-4 mb-6">
